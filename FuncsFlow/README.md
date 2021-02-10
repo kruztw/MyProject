@@ -1,6 +1,6 @@
-## FuncFlow
+## FuncsFlow
 
-FuncFlow 的功能是將程式碼使用到的 functions 以類似 pstree 的形似印出
+FuncsFlow 的功能是將程式碼使用到的 functions 以類似 pstree 的形似印出
 
 ## Usage
 

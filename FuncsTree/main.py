@@ -48,7 +48,7 @@ def check_file_exist(file):
 def check_extention_support(ext):
     return ext in extensions
 
-
+    
 class Tracer:
     file = []
     header_file = []
@@ -137,16 +137,30 @@ class Tracer:
                 if subfunc_name not in black_list and len(subfunc_name)>1:
                     self.funcs[func_name].append(subfunc_name)
     
-    def print_func_tree(self):
-        print("")
+    def print_func_tree(self, depth):
+        #print("")
         for fn in self.funcs:
             print(Color.colorify(f"{fn}", "red"))
-            for sub_fn in self.funcs[fn]:
-                print(f"      {sub_fn}")
+            parent_func = fn
+            footprint = [(parent_func, 0)]
+            d = 1
+            while len(footprint):
+                parent_func, idx = footprint[-1]
+                footprint = footprint[:-1]
+                d -= 1
+                while d < depth:
+                    try:
+                        child_func = self.funcs[parent_func][idx]
+                        print(" "*(8*(d+1))+child_func)
+                        footprint.append((parent_func, idx+1))
+                        parent_func = child_func
+                        idx = 0
+                        d += 1
+                    except:
+                        break
 
 
-    def run(self):
-
+    def run(self, depth):
         for f in self.header_file:
             _ , ext = os.path.splitext(f)
             self.parse_header(f, ext)
@@ -157,13 +171,14 @@ class Tracer:
             except:
                 pass
 
-        self.print_func_tree()
+        self.print_func_tree(depth)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--verbose")
     parser.add_argument("-i", "--include", help="library path", default=".")
+    parser.add_argument("-d", "--depth", help="", default="1")
     requiredArgs = parser.add_argument_group('required arguments')
     requiredArgs.add_argument("-f", "--file", help="files prepared to parse", required=True)
     args = parser.parse_args()
@@ -173,6 +188,7 @@ if __name__ == "__main__":
     
     libs_path = ['.'] + args.include.split()
     assert(all(list(map(check_file_exist, libs_path+arg_files))))
-    
+
+    depth = int(args.depth)
     tracer = Tracer(arg_files, libs_path)
-    tracer.run()
+    tracer.run(depth)

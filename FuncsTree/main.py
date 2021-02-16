@@ -55,11 +55,13 @@ class Tracer:
     libs_path = []
     files_path = []
     funcs = {}
+    entry = ""
 
-    def __init__(self, file, libs_path):
+    def __init__(self, file, libs_path, entry):
         self.file = file
         self.header_file = copy.deepcopy(file)
         self.libs_path = libs_path
+        self.entry = entry
 
     def parse_header(self, filename, ext):
         """ collect all headers in filename and record its filepath """
@@ -140,6 +142,8 @@ class Tracer:
     def print_func_tree(self, depth):
         #print("")
         for fn in self.funcs:
+            if self.entry and fn != self.entry:
+                continue
             print(Color.colorify(f"{fn}", "red"))
             parent_func = fn
             footprint = [(parent_func, 0)]
@@ -179,6 +183,7 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--verbose")
     parser.add_argument("-i", "--include", help="library path", default=".")
     parser.add_argument("-d", "--depth", help="", default="1")
+    parser.add_argument("-F", "--Func", help="", default="")
     requiredArgs = parser.add_argument_group('required arguments')
     requiredArgs.add_argument("-f", "--file", help="files prepared to parse", required=True)
     args = parser.parse_args()
@@ -190,5 +195,6 @@ if __name__ == "__main__":
     assert(all(list(map(check_file_exist, libs_path+arg_files))))
 
     depth = int(args.depth)
-    tracer = Tracer(arg_files, libs_path)
+    entry = args.Func
+    tracer = Tracer(arg_files, libs_path, entry)
     tracer.run(depth)

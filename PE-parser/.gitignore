@@ -1,0 +1,4 @@
+/.vs
+/Release
+/PE-parser/Release
+*.vcxproj.user

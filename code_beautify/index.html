@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+</head>
+	<body>
+ <form onsubmit="return formHandler();">
+ <input name="message">
+ </form>
+ <div id="comments"></div>
+ <script>
+ const comments = document.getElementById("comments")
+ const messageElement = document.getElementsByName("message")[0]
+ function formHandler() {
+ const message = messageElement.value
+ messageElement.value = ""
+ comments.innerHTML += `<div>${message}</div>`
+ return false
+ }
+ </script>
+</body>
+</html>
+

@@ -20,7 +20,7 @@ required arguments:
 
 ## Example
 
-![example](/FuncsFlow/example.png)
+![example](/FuncsTree/example.png)
 
 ## TODO
 

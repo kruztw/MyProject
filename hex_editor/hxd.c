@@ -1,5 +1,3 @@
-/*** includes ***/
-
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
@@ -19,26 +17,25 @@
 #include <time.h>
 #include <unistd.h>
 
-/*** defines ***/
-#define KILO_VERSION "0.0.1"
-#define KILO_QUIT_TIMES (3)
-#define CTRL_KEY(k) ((k) & 0x1f)
-#define LINE_LEN (0x100) // must bigger than 66 = 8(addr) + 1(":") + 40(hex) + 2(gap) + 16(ascii) 
-#define ADDR_LEN (8)
-#define LINE_CHARS (0x10)
-#define GAP (4)
-#define HEX_START_POS (ADDR_LEN+1)
-#define HEX_END_POS (HEX_START_POS+LINE_CHARS/2*5 - 1)
+#define VERSION         ("0.0.1")
+#define QUIT_TIMES      (3)
+#define CTRL_KEY(k)     ((k) & 0x1f)
+#define ROW_LEN         (0x100) // must bigger than 67 = 8(addr) + 1(":") + 40(hex) + 2(gap) + 16(ascii) 
+#define ADDR_LEN        (8)
+#define BYTES_PER_ROW   (16)
+#define GAP             (4)
+#define HEX_START_POS   (ADDR_LEN + 1)
+#define HEX_END_POS     (HEX_START_POS + BYTES_PER_ROW/2*5 - 1)
 #define ASCII_START_POS (HEX_END_POS + GAP + 1)
-#define ASCII_END_POS (ASCII_START_POS + LINE_CHARS-1)
- 
+#define ASCII_END_POS   (ASCII_START_POS + BYTES_PER_ROW - 1)
 
-enum editorKey {
-    BACKSPACE = 127,
+#define POSTIVE_INFINITY  (0xFFFFFFF)
+
+typedef enum {
+    // FIXME: other platform ?
+    BACKSPACE = 8,
     ARROW_LEFT = 1000,
-    ARROW_LEFT_BOUND,
     ARROW_RIGHT,
-    ARROW_RIGHT_BOUND,
     ARROW_UP,
     ARROW_DOWN,
     DEL_KEY,
@@ -46,61 +43,143 @@ enum editorKey {
     END_KEY,
     PAGE_UP,
     PAGE_DOWN
-};
+} editorKey;
 
-/*** data ***/
+typedef enum {
+    ADDRESS,
+    HEX,
+    ASCII
+} REGION;
 
-typedef struct erow {
-    int size;
-    char *chars;
-} erow;
-
-struct editorConfig {
-    int cx, cy;
-    int rowoff;
-    int coloff;
-    int screenrows;
-    int screencols;
-    int numrows;
-    erow *row;
-    int dirty;
+struct editorConfiguration {
     char *filename;
-    char statusmsg[80];
-    time_t statusmsg_time;
-    struct termios orig_termios;
+    unsigned int screenRow;
+    unsigned int screenCol;
+    struct termios orig;
 };
 
-struct editorConfig E;
+struct editorMetadata {
+    char **text;
+    unsigned int numRows;
 
-/*** prototypes ***/
+    unsigned int x, y;
 
-void editorSetStatusMessage(const char *fmt, ...);
-void editorRefreshScreen();
-char *editorPrompt(char *prompt, void (*callback)(char *, int));
-void editorInsertRow(int at, char *s, size_t len);
-void editorMoveCursor(int key);
+    char *statusMsg;
+    time_t statusTime;
+
+    // scroll
+    unsigned int pageFirstRowIdx;
+    unsigned int pageFirstColIdx;
+
+    bool isDirty;
+};
+
+struct editor {
+    struct editorConfiguration conf;
+    struct editorMetadata metadata;
+};
+
+struct editor E;
+
+void Log(const char *fmt, ...);
+void closeLog();
+
+void terminate(const int code);
+void die(const char *s);
+void enableRawMode();
+void disableRawMode();
+
 static inline int hexToInt(char c);
+static inline char intToHex(int d);
+static inline bool isPrintable(char c);
+static void append(char **p, const char *s, unsigned int len);
 
-/*** terminal ***/
+static void initEditor();
+static void editorSetStatusMessage(const char *fmt, ...);
+static void editorRefreshScreen();
+static void editorInsertRow(const unsigned int, const char *);
+static void editorMoveCursor(int key);
+static void editorSave();
+static void editorScroll();
+static void editorDrawRows(char **buf);
+static void editorDrawMessageBar(char **buf);
+static void editorRefreshScreen();
+static void editorSetStatusMessage(const char *fmt, ...);
+static void editorMoveCursor(int key);
+static void editorProcessKeypress();
+static int  editorReadKey();
+
+static inline bool isValidPos(const unsigned int x, const unsigned int y);
+static inline bool isFirstHex(const unsigned int x);
+static inline bool isFirstByte(const unsigned int x, const unsigned int y);
+static inline bool isLastByte(const unsigned int x, const unsigned int y);
+
+static int getCursorPosition(unsigned int *rows, unsigned int *cols);
+static int getWindowSize(unsigned int *rows, unsigned int *cols);
+static inline REGION getRegion(const int x);
+static inline REGION getCurRegion();
+static inline char getNthRowByte(char *row, const unsigned int at);
+static inline bool hasPrev(const unsigned int x, const unsigned int y);
+static inline bool hasNext(const unsigned int x, const unsigned int y);
+static inline int posToByteIdx(const int x);
+static inline int getLastRowBytesNum();
+static inline int nthBytePosInHexRegion(int n);
+static inline int nthBytePosInASCIIRegion(int n);
+static inline int getByteIdxInHexRegion(int x);
+static inline int getByteIdxInASCIIRegion(int x);
+static inline void backwardOne(unsigned int *x, unsigned int *y);
+static inline void backwardCurOne();
+static inline void backwardOneByte(unsigned int *x, unsigned int *y);
+static inline void backwardCurOneByte();
+static inline void forwardOne(unsigned int *x, unsigned int *y);
+static inline void forwardCurOne();
+static inline void forwardOneByte(unsigned int *x, unsigned int *y);
+static inline void forwardCurOneByte();
+static inline void setDirty();
+static inline void setClean();
+static void createRow(char *s, const int len);
+
+FILE *logFptr;
+
+void Log(const char *fmt, ...) {
+    if (logFptr == NULL) {
+        logFptr = fopen("./log", "a");
+        if (logFptr == NULL)
+            die("open log failed");
+    }
+
+    va_list args;
+    va_start(args,     fmt);
+    vfprintf(logFptr, fmt, args);
+    va_end(args);
+}
+
+void closeLog() {
+    if (logFptr) {
+        fclose(logFptr);
+    }
+}
+
+void terminate(const int code) {
+    closeLog();
+    exit(code);
+}
 
 void die(const char *s) {
     write(STDOUT_FILENO, "\x1b[2J", 4);
     write(STDOUT_FILENO, "\x1b[H", 3);
 
     perror(s);
-    exit(1);
-}
-
-void disableRawMode() {
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == -1)
-        die("tcsetattr");
+    terminate(1);
 }
 
 void enableRawMode() {
-    if (tcgetattr(STDIN_FILENO, &E.orig_termios) == -1) die("tcgetattr");
+    if (tcgetattr(STDIN_FILENO, &E.conf.orig) == -1)
+        die("tcgetattr");
+
     atexit(disableRawMode);
 
-    struct termios raw = E.orig_termios;
+    struct termios raw = E.conf.orig;
     raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
     raw.c_oflag &= ~(OPOST);
     raw.c_cflag |= (CS8);
@@ -108,14 +187,166 @@ void enableRawMode() {
     raw.c_cc[VMIN] = 0;
     raw.c_cc[VTIME] = 1;
 
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1)
+        die("tcsetattr");
 }
 
-int editorReadKey() {
+void disableRawMode() {
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.conf.orig) == -1)
+        die("tcsetattr");
+}
+
+static inline bool isValidPos(const unsigned int x, const unsigned int y) {
+    // loosely check, at least not overflow
+    return x <= ASCII_END_POS && y < E.metadata.numRows;
+}
+
+static inline bool isFirstHex(const unsigned int x) {
+    if (getRegion(x) != HEX)
+        return false;
+
+    return (x - HEX_START_POS)%5%2;
+}
+
+static inline bool isFirstByte(const unsigned int x, const unsigned int y) {
+    return E.metadata.numRows != 0 && getByteIdxInHexRegion(x) == 0 && y == 0;
+}
+
+static inline bool isLastByte(const unsigned int x, const unsigned int y) {
+    return y == (E.metadata.numRows-1) && getByteIdxInHexRegion(x) == getLastRowBytesNum() - 1;
+}
+
+static inline int hexToInt(const char c) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+        return 0;
+
+    return c >= 'a' ? c - 'a' + 10 : c - '0';
+}
+
+static inline char intToHex(int d) {
+    return d > 9 ? d%10 + 'a' : d + '0';
+}
+
+static inline REGION getRegion(const int x) {
+    if (x < HEX_START_POS)
+        return ADDRESS;
+    
+    if (x < ASCII_START_POS)
+        return HEX;
+
+    return ASCII;
+}
+
+static inline REGION getCurRegion() {
+    return getRegion(E.metadata.x);
+}
+
+static inline int posToByteIdx(const int x) {
+    int idx = (x - HEX_START_POS);
+    return idx/5*2 + ((idx%5) - 1)/2;
+}
+
+static inline char getNthRowByte(char *row, const unsigned int at) {
+    if (at > BYTES_PER_ROW)
+        die("getNthRowByte: invalid");
+
+    int pos = nthBytePosInHexRegion(at);
+    if (row[pos] == ' ')
+        return 0;
+
+    int hi = hexToInt(row[pos]);
+    int lo = hexToInt(row[pos + 1]);
+    return hi*16 + lo;
+}
+
+static inline bool isPrintable(char c) {
+    return  c >= 0x20 && c < 0x7f;
+}
+
+static inline bool hasNext(const unsigned int x, const unsigned int y) {
+    return E.metadata.numRows != 0 && (y < E.metadata.numRows - 1 || x < strlen(E.metadata.text[y]) - 1);
+}
+
+static inline bool hasPrev(const unsigned int x, const unsigned int y) {
+    return !(x == HEX_START_POS + 1 && y == 0);
+}
+
+static inline void forwardCurOne() {
+    forwardOne(&E.metadata.x, &E.metadata.y);
+}
+
+static inline void forwardOne(unsigned int *x, unsigned int *y) {
+    while (hasNext(*x, *y)) {
+        if (*x == ASCII_END_POS) {
+            *x = HEX_START_POS;
+            ++(*y);
+        }
+
+        ++(*x);
+        if (E.metadata.text[*y][*x] != ' ' || getRegion(*x) != HEX)
+            break;
+    }
+}
+
+static inline void forwardCurOneByte() {
+    forwardOneByte(&E.metadata.x, &E.metadata.y);
+}
+
+static inline void forwardOneByte(unsigned int *x, unsigned int *y) {
+    if (getRegion(*x) != HEX)
+        die("forwardOneByte invalid");
+
+    if (isLastByte(*x, *y))
+        return;
+
+    while (hasNext(*x, *y)) {
+        forwardOne(x, y);
+        if (isFirstHex(*x))
+            break;
+    }
+}
+
+static inline void backwardCurOne() {
+    backwardOne(&E.metadata.x, &E.metadata.y);
+}
+
+static inline void backwardOne(unsigned int *x, unsigned int *y) {
+    while (hasPrev(*x, *y)) {
+        if (*x == HEX_START_POS) {
+            *x = ASCII_END_POS;
+            --(*y);
+        }
+    
+        --(*x);
+        if (E.metadata.text[*y][*x] != ' ' || getCurRegion() != HEX)
+            break;
+    }
+}
+
+static inline void backwardCurOneByte() {
+    backwardOneByte(&E.metadata.x, &E.metadata.y);
+}
+
+static inline void backwardOneByte(unsigned int *x, unsigned int *y) {
+    if (getRegion(*x) != HEX)
+        die("backwardOneByte: invalid region");
+
+    if (isFirstByte(*x, *y))
+        return;
+
+    while (hasPrev(*x, *y)) {
+        backwardOne(x, y);
+        if (isFirstHex(*x))
+            break;
+    }
+}
+
+static int editorReadKey() {
     int nread;
     char c;
     while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
-        if (nread == -1 && errno != EAGAIN) die("read");
+        if (nread == -1 && errno != EAGAIN)
+            die("read");
     }
 
     if (c == '\x1b') {
@@ -160,7 +391,7 @@ int editorReadKey() {
     }
 }
 
-int getCursorPosition(int *rows, int *cols) {
+static int getCursorPosition(unsigned int *rows, unsigned int *cols) {
     char buf[32];
     unsigned int i = 0;
 
@@ -173,14 +404,16 @@ int getCursorPosition(int *rows, int *cols) {
     }
     buf[i] = '\0';
     
-    if (buf[0] != '\x1b' || buf[1] != '[') return -1;
-    if (sscanf(&buf[2], "%d;%d", rows, cols) != 2) return -1;
-    printf("\r\n&buf[1]: '%s'\r\n", &buf[1]);
+    if (buf[0] != '\x1b' || buf[1] != '[')
+        return -1;
+
+    if (sscanf(&buf[2], "%u;%u", rows, cols) != 2)
+        return -1;
  
     return -1;
 }
 
-int getWindowSize(int *rows, int *cols) {
+static int getWindowSize(unsigned int *rows, unsigned int *cols) {
     struct winsize ws;
 
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
@@ -193,733 +426,524 @@ int getWindowSize(int *rows, int *cols) {
         return 0;
     }
 }
-/*** format transform ***/
 
-static inline int nCharHexPos(int n) {
+static inline int nthBytePosInHexRegion(int n) {
+    if (n < 0 || n >= BYTES_PER_ROW)
+        die("nthBytePosInHexRegion: invalid");
+
     return HEX_START_POS + n/2*5 + 1 + (n%2)*2;
 }
 
-/*
- * getChar: return at'th character
- * @row: a pointer to target row ?
- * @at:  character index (0 - 15)
- */
-static inline char getChar(erow *row, int at) {
-    if (at < 0 || at > 15) return '\0';
-    int hi = hexToInt(row->chars[nCharHexPos(at)]);
-    int lo = hexToInt(row->chars[nCharHexPos(at)+1]);
-    return hi*16+lo;
+static inline int nthBytePosInASCIIRegion(int n) {
+    if (n < 0 || n >= BYTES_PER_ROW)
+        die("nthBytePosInASCIIRegion: invalid");
+
+    return ASCII_START_POS + n;
 }
 
-static inline bool isPrintable(char c) {
-    return  c >= 0x20 && c < 0x7f;
+static inline int getByteIdxInHexRegion(int x) {
+    if (getRegion(x) != HEX)
+        die("getByteIdxInHexRegion invalid");
+    
+    return ((x - HEX_START_POS)/5)*2 + ((x - HEX_START_POS - 1)%5)/2;
 }
 
-static inline bool isLastByte(int x, int y) {
-    return (y == (E.numrows-1) && E.row[y].chars[x+2] == ' ' && E.row[y].chars[x+3] == ' ');
+static inline int getByteIdxInASCIIRegion(int x) {
+    if (getRegion(x) != ASCII)
+        die("getByteIdxInASCIIRegion invalid");
+    
+    return x - ASCII_START_POS;
 }
 
-static inline int hexToInt(char c) {
-    return c >= 'a' ? c - 'a' + 10 : c - '0';
-}
-static int mappingPos(int p) {
-    return p < ASCII_START_POS ? \
-                             ASCII_START_POS + (p-ADDR_LEN-1)/5 * 2 + (((p-ADDR_LEN-1)%5)>2) : \
-                             ADDR_LEN + 1 + (p-ASCII_START_POS)/2 * 5 + 1 + ((p-ASCII_START_POS)%2)*2;
+static inline int getLastRowBytesNum() {
+    return strlen(E.metadata.text[E.metadata.numRows-1]) - ASCII_START_POS;
 }
 
-static inline char intToHex(int d) {
-    return d > 9 ? d%10 + 'a' : d + '0';
+static inline void setDirty() {
+    E.metadata.isDirty = true;
 }
 
-void toHexFormat(char *line, char *s, size_t len) {
-    sprintf(line, "%.8x:", E.numrows*LINE_CHARS);
-    for (unsigned int j = 0; j+1 < len; j+=2) {
-        sprintf(line+strlen(line), " %02x%02x", (unsigned char)s[j], (unsigned char)s[j+1]);
-    }
+static inline void setClean() {
+    E.metadata.isDirty = false;
+}
+
+static void createRow(char *s, const int len) {
+    char buf[ROW_LEN] = "";
+
+    snprintf(buf, ROW_LEN, "%.8x:", E.metadata.numRows * BYTES_PER_ROW);
+
+    for (int i = 0; i+1 < len; i+=2)
+        snprintf(buf + strlen(buf), ROW_LEN - strlen(buf), " %02x%02x", (unsigned char)s[i], (unsigned char)s[i+1]);
     
     if (len%2)
-        sprintf(line+strlen(line), " %02x", (unsigned char)s[len-1]);
+        snprintf(buf + strlen(buf), ROW_LEN - strlen(buf), " %02x", (unsigned char)s[len-1]);
 
-    int p = strlen(line);
-    while (p < ASCII_START_POS) {
-        line[p++] = ' ';
-    }
+    int p = strlen(buf);
+    while (p < ASCII_START_POS)
+        buf[p++] = ' ';
 
-    for (unsigned int j = 0; j < len; j++) {
-        char c = s[j];
-        if (!isPrintable(c))
-            line[p++] = '.';
-        else
-            line[p++] = s[j];
-    }
-    line[p] = '\0';
-}
-
-
-/*
- * sendHexFormat: 
- * @s: input len , s[len] must be null.
- * @len: length of s, len == 0 means last line, then flush remaining.
- */
-void sendHexFormat(char *s, size_t len) {
-    if (s[len]) die("Invalid string");
-
-    char line[LINE_LEN] = "";
-    toHexFormat(line, s, len);
-    editorInsertRow(E.numrows, line, strlen(line));
-}
-
-/*** row operations ***/
-
-static void rowBackOne(erow *row, int at, unsigned char first) {
-    int i, j;
-
-    j = nCharHexPos(LINE_CHARS-1)+1;
-    while(row->chars[j] == ' ') j--;
- 
-    if (j != HEX_END_POS) {
-        i = j;
-        j += (j-HEX_START_POS)%5 == 4 ? 3 : 2;
-        row->size++;
+    for (int i = 0; i < len && p < ROW_LEN; ++i, ++p) {
+        if (!isPrintable(s[i])) {
+            buf[p] = '.';
     } else {
-        i = j-2;
+            buf[p] = s[i];
+    }
+    }
+
+    if (p < ROW_LEN)
+        buf[p] = '\0';
+
+    editorInsertRow(E.metadata.numRows, buf);
+}
+
+static void rowBackOne(char *row, int start) {
+    // HEX Region
+    for (int i = BYTES_PER_ROW - 2; i >= start; --i) {
+    int s = nthBytePosInHexRegion(i);
+        int d = nthBytePosInHexRegion(i+1);
+
+    row[d]   = row[s];
+    row[d+1] = row[s+1];
     }
     
-    while (i>=at) {
-        row->chars[j--] = row->chars[i--];
-        row->chars[j--] = row->chars[i--];
-        if (row->chars[i] == ' ') i--;
-        if (row->chars[j] == ' ') j--;
-    }
+    // ASCII Region
+    for (int i = BYTES_PER_ROW - 2; i >= start; --i) {
+        int s = nthBytePosInASCIIRegion(i);
+        int d = nthBytePosInASCIIRegion(i+1);
 
-    for (i = ASCII_END_POS; i > mappingPos(at); i--)
-        row->chars[i] = row->chars[i-1];
-
-    row->chars[at] = intToHex(first/16);
-    row->chars[at+1] = intToHex(first%16);
-    row->chars[mappingPos(at)] = isPrintable(first) ? first : '.';
-}
-
-static void rowForwardOne(int r, int at, unsigned char last, bool final) {
-    int i, j;
-
-    bool across_gap = E.row[r].chars[at-1] == ' ';
-    if (at == HEX_START_POS+1) {
-        E.row[r-1].chars[HEX_END_POS-1] = E.row[r].chars[at];
-        E.row[r-1].chars[HEX_END_POS]   = E.row[r].chars[at+1];
-        E.row[r-1].chars[ASCII_END_POS] = E.row[r].chars[ASCII_START_POS];
-    }
-    else {
-        E.row[r].chars[at-2-across_gap] = E.row[r].chars[at];
-        E.row[r].chars[at-1-across_gap] = E.row[r].chars[at+1];
-        E.row[r].chars[mappingPos(at)-1] = E.row[r].chars[mappingPos(at)];
-    }
-
-    for (i = at, j = i+2; j <= HEX_END_POS;) {
-        if (E.row[r].chars[i] == ' ') i++;
-        if (E.row[r].chars[j] == ' ') j++;
-        E.row[r].chars[i++] = E.row[r].chars[j++];
-        E.row[r].chars[i++] = E.row[r].chars[j++];
-    }   
-
-    for (i = mappingPos(at); i < ASCII_END_POS; i++)
-        E.row[r].chars[i] = E.row[r].chars[i+1];
-        
-    if (!final) {
-        E.row[r].chars[HEX_END_POS-1] = intToHex(last/16);
-        E.row[r].chars[HEX_END_POS] = intToHex(last%16);
-        E.row[r].chars[ASCII_END_POS] = isPrintable(last) ? last : '.';
-    }   
-}
-
-void editorInsertRow(int at, char *s, size_t len) {
-    if (at < 0 || at > E.numrows) return;
-
-    E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
-    memmove(&E.row[at + 1], &E.row[at], sizeof(erow) * (E.numrows - at));
-    
-    E.row[at].size = len;
-    E.row[at].chars = malloc(LINE_LEN+1);
-    if (!E.row[at].chars) {
-        die("malloc failed\n");
-    }
-    memcpy(E.row[at].chars, s, len);
-    E.row[at].chars[len] = '\0';
-    E.numrows++;
-    E.dirty++;
-}
-
-void editorFreeRow(erow *row) {
-    free(row->chars);
-}
-
-void editorDelRow(int at) {
-    if (at < 0 || at >= E.numrows) return;
-    editorFreeRow(&E.row[at]);
-    memmove(&E.row[at], &E.row[at + 1], sizeof(erow) * (E.numrows - at - 1));
-    E.numrows--;
-    E.dirty++;
-}
-
-void editorRowEditChar(erow *row, int at, unsigned char c) {
-    char new_c;
-    if (at < ASCII_START_POS) {
-        row->chars[at] = c;
-        if (((at-ADDR_LEN-1)%5) % 2)
-            new_c = hexToInt(c)*16 + hexToInt(row->chars[at+1]);
-        else
-            new_c = hexToInt(row->chars[at-1])*16 + hexToInt(row->chars[at]);
-        
-       row->chars[mappingPos(at)] = isPrintable(new_c) ? new_c : '.';
-    }
-    else {
-        row->chars[at] = c;
-        char hi = intToHex(c/16);
-        char lo = intToHex(c%16);
-        row->chars[mappingPos(at)] = hi;
-        row->chars[mappingPos(at)+1] = lo;
+        row[d] = row[s];
     }
 }
 
-void editorRowInsertChar(erow *row, int at) {
-    if (at < 0 || at > ASCII_START_POS-GAP) return;
-    if (!((at - HEX_START_POS)%5%2)) at--;
+static void rowForwardOne(char *row, int start) {
+    // HEX Region
+    for (int i = start; i < BYTES_PER_ROW - 1; ++i) {
+        int s = nthBytePosInHexRegion(i+1);
+        int d = nthBytePosInHexRegion(i);
 
-    bool spilling = false;
-    char first, last;
-
-    if (E.row[E.numrows-1].chars[HEX_END_POS] != ' ')
-       spilling = true;
-
-    last = getChar(row, 15);
-    rowBackOne(row, at, 0);
-    for (int i = E.cy+1; i < E.numrows; i++) {
-        first = last;
-	last = getChar(&E.row[i], 15);
-        rowBackOne(&E.row[i], HEX_START_POS+1, first);
+        row[d]   = row[s];
+        row[d+1] = row[s+1];
     }
     
-    if (spilling) {
-        char line[LINE_LEN] = "";
-        char s[LINE_CHARS] = {last};
-        toHexFormat(line, s, 1);
-        editorInsertRow(E.numrows, line, strlen(line));
+    // ASCII Region
+    for (int i = start; i < BYTES_PER_ROW - 1; ++i) {
+        int s = nthBytePosInASCIIRegion(i+1);
+        int d = nthBytePosInASCIIRegion(i);
+
+        row[d] = row[s];
     }
- 
-    E.dirty++;
 }
 
-void editorRowAppendString(erow *row, char *s, size_t len) {
-    row->chars = realloc(row->chars, row->size + len + 1);
-    memcpy(&row->chars[row->size], s, len);
-    row->size += len;
-    row->chars[row->size] = '\0';
-    E.dirty++;
+void editorInsertRow(const unsigned int idx, const char *s) {
+    if (idx > E.metadata.numRows)
+        die("editorInsertRow: invalid");
+
+    E.metadata.text = realloc(E.metadata.text, (E.metadata.numRows + 1) * sizeof(char *));
+    if (E.metadata.text == NULL)
+        die("realloc");
+
+    if (E.metadata.numRows > 0) {
+        for (unsigned int i = E.metadata.numRows-1; i >= idx; --i)
+            E.metadata.text[i+1] = E.metadata.text[i];
+    }
+
+    char *new_row = calloc(1, ROW_LEN);
+    if (new_row == NULL)
+        die("calloc");
+   
+    memcpy(new_row, s, strlen(s));
+    E.metadata.text[idx] = new_row;
+
+    E.metadata.numRows++;
 }
 
-void removeLastByte() {
-    E.row[E.numrows-1].chars[HEX_END_POS] = ' ';
-    E.row[E.numrows-1].chars[HEX_END_POS-1] = ' ';
-    E.row[E.numrows-1].chars[ASCII_END_POS] = '\0';
+void editorRowEditChar(const unsigned int x, const unsigned int y, unsigned char c) {
+    if (!isValidPos(x, y))
+        die("editorRowEditChar: invalid position");
+    
+    char *row = E.metadata.text[y];
+
+    row[x] = c;
+    if (getRegion(x) == HEX) {
+        int n = getByteIdxInHexRegion(x);
+        int idx = nthBytePosInASCIIRegion(n);
+        int val = getNthRowByte(row, n);
+        row[idx] = isPrintable(val) ? val : '.';
+    } else if (getRegion(x) == ASCII) {
+        int   n = getByteIdxInASCIIRegion(x);
+        int idx = nthBytePosInHexRegion(n);
+        row[idx]   = intToHex(c/16);
+        row[idx+1] = intToHex(c%16);
+    } else {
+        die("editorRowEditChar invalid region");
+    }
 }
 
-bool editorRowDelChar(erow *row, int at) {
-    if (at < 0 || at > ASCII_START_POS-GAP) return false;
-    if (isLastByte(E.cx, E.cy) && E.row[E.cy].chars[E.cx+1] == ' ')
-        goto lastByte;
+void insertByte(const unsigned int x, const unsigned int y) {
+    if (!isFirstHex(x))
+        die("insertByte: invalid x position");
 
-    // only allow cursor at each byte's first hex char.
-    if (((at - HEX_START_POS)%5)%2 == 0)
-        return false;
+    char firstIdx = posToByteIdx(x);
+    char firstByte = '\0';
+    char lastByte = '\0';
 
-    if (row->chars[at] == ' ') at--;
-    if (!((at - HEX_START_POS)%5%2)) at--;
+    for (unsigned int i = y; i < E.metadata.numRows; ++i) {
+        char *row = E.metadata.text[i];
+        lastByte = getNthRowByte(row, BYTES_PER_ROW - 1);
 
-    bool shrinking = false;
-    char last;
+        rowBackOne(row, firstIdx);
+        row[nthBytePosInHexRegion(firstIdx)]   = intToHex(firstByte/16);
+        row[nthBytePosInHexRegion(firstIdx)+1] = intToHex(firstByte%16);
+        row[nthBytePosInASCIIRegion(firstIdx)] = isPrintable(firstByte) ? firstByte : '.';
 
-    if (E.row[E.numrows-1].chars[nCharHexPos(1)] == ' ')
-       shrinking = true;
-
-    bool final = E.cy+1 == E.numrows;
-    last = final ? '\0' : getChar(&E.row[E.cy+1], 0);
-    rowForwardOne(E.cy, at, last, final);
-    if (final)
-        removeLastByte();
-
-    for (int i = E.cy+1; i < E.numrows; i++) {
-        final = i+1 == E.numrows;
-        last = final ? '\0' : getChar(&E.row[i+1], 0);
-        rowForwardOne(i, HEX_START_POS+1, last, i+1 == E.numrows);
-        if (final)
-            removeLastByte();
+        firstByte = lastByte;
+        firstIdx = 0;
     }
     
-    if (shrinking) {
-        editorDelRow(E.numrows - 1);
-        // special case
-        if (E.cy == E.numrows) {
-            E.cy--;
-            E.cx = HEX_END_POS+1;
+    // y == E.metadata.numRows => append to lastByte and need to create a new row
+    if (y >= E.metadata.numRows || lastByte != '\0') {
+        char buf[2] = {lastByte};
+        createRow(buf, 1);
+    }
+}
+
+void deleteByte(const unsigned int x, const unsigned int y) {
+    if (!isFirstHex(x))
+        die("deleteByte: invalid x position");
+
+    char firstIdx = posToByteIdx(x);
+    for (unsigned int i = y; i < E.metadata.numRows; ++i) {
+        char *row = E.metadata.text[i];
+
+        rowForwardOne(row, firstIdx);
+        firstIdx = 0;
+
+        if (i < E.metadata.numRows - 1) {
+            char c = getNthRowByte(E.metadata.text[i+1], 0);
+            row[nthBytePosInHexRegion(BYTES_PER_ROW - 1)]     = intToHex(c/16);
+            row[nthBytePosInHexRegion(BYTES_PER_ROW - 1) + 1] = intToHex(c%16);
+            row[nthBytePosInASCIIRegion(BYTES_PER_ROW - 1)]   = isPrintable(c) ? c : '.';
         }
     }
- 
-    E.dirty++;
-    return true;
-
-lastByte:
-    E.row[E.cy].chars[E.cx] = ' ';
-    E.row[E.cy].chars[E.cx-1] = ' ';
-    E.row[E.cy].chars[mappingPos(E.cx)] = ' ';
-    return true;
+    
+    int lastRowBytes = getLastRowBytesNum();
+    if (lastRowBytes == BYTES_PER_ROW) {
+        char *lastRow = E.metadata.text[E.metadata.numRows - 1];
+        int idx = BYTES_PER_ROW - 1;
+        lastRow[nthBytePosInHexRegion(idx)]     = ' ';
+        lastRow[nthBytePosInHexRegion(idx) + 1] = ' ';
+        lastRow[nthBytePosInASCIIRegion(idx)]   = '\0';
+    } else if (lastRowBytes == 0) {
+        --E.metadata.numRows;
+    }
 }
 
-
-/*** editor operations ***/
-
 void editorEditChar(int c) {
-    if (E.cx < ASCII_START_POS && (c < '0' || c > 'f' || (c > '9' && c < 'a'))) return;
-    editorRowEditChar(&E.row[E.cy], E.cx, c);
-    if (E.cy+1 != E.numrows || E.row[E.cy].chars[E.cx+1] != ' ' || E.row[E.cy].chars[E.cx+2] != ' ')
-        editorMoveCursor(ARROW_RIGHT_BOUND);
+    if (getCurRegion() == HEX && (c < '0' || c > 'f' || (c > '9' && c < 'a')))
+        return;
+    
+    editorRowEditChar(E.metadata.x, E.metadata.y, c);
+    forwardCurOne();
 }
 
 void editorInsertChar() {
-    if (E.cx > HEX_END_POS) return;
-    if (E.cy == E.numrows) {
-        editorInsertRow(E.numrows, "", 0);
-    }
-    editorRowInsertChar(&E.row[E.cy], E.cx);
-    editorMoveCursor(ARROW_RIGHT_BOUND);
-    editorMoveCursor(ARROW_RIGHT_BOUND);
-}
+    unsigned int atX = E.metadata.x;
+    unsigned int atY = E.metadata.y;
 
-
-void editorDelChar() {
-    if (E.cy == E.numrows || E.cx > HEX_END_POS) return;
-    if (E.cx < nCharHexPos(1) && E.cy == 0) return;
-    if (!editorRowDelChar(&E.row[E.cy], E.cx)) return;
+    // only support insert in hex region
+    if (getRegion(atX) != HEX)
+        return;
     
-    if (E.cx == nCharHexPos(0)) {
-        E.cy--;
-        E.cx = HEX_END_POS+1;
-    }
-    editorMoveCursor(ARROW_LEFT_BOUND);
-    editorMoveCursor(ARROW_LEFT_BOUND);
-}
+    setDirty();
 
-/*** file i/o ***/
+    // 00000000: 1234 1234 1234 ...
+    //  prepend 00 if at in odd position
+    //  append  00 if at in even position
+    bool prepend = isFirstHex(atX);
 
-char *editorRowToString(int *buflen) {
-    int totlen = 0;
-    int i, j;
-    if (E.numrows == 0)
-        return NULL;
-
-    totlen = LINE_CHARS * E.numrows;
-         
-    char *buf = calloc(1, totlen+1);
-    char *p = buf;
-    for (i = 0; i < E.numrows; i++) {
-        for(j = 0; j < LINE_CHARS; j++, p++)
-            *p = getChar(&E.row[i], j);
-    }
-
-    p -= ASCII_END_POS - strlen(E.row[E.numrows-1].chars) + 1;
-    *p = '\0';
-    *buflen = p-buf;
-
-    return buf;
-}
-
-static bool isEmpty(char *filename) {
-    struct stat st;
-    stat(filename, &st);
-    return !(st.st_size > 0);
-}
-
-void editorOpen(char *filename) {
-    free(E.filename);
-    E.filename = strdup(filename);
-
-    int fp = open(filename, O_RDONLY);
-    if (fp<0 || isEmpty(filename))
-        die("Invalid file: maybe not exist or file is empty");
-     
-    char line[LINE_CHARS+1] = "";
-    int linelen;
-    while ((linelen = read(fp, &line, LINE_CHARS))) {
-        line[linelen] = '\0';
-        sendHexFormat(line, linelen);
-    }
-    close(fp);
-    E.dirty = 0;
-}
-
-void editorSave() {
-    if (E.filename == NULL) {
-        editorPrompt("Save as: %s", NULL);
-        if (E.filename == NULL) {
-            editorSetStatusMessage("Save aborted");
+    if (!prepend) {
+        if (isLastByte(atX, atY)) {
+            if (getLastRowBytesNum() == BYTES_PER_ROW) {
+                char buf[2] = {'\0'};
+                createRow(buf, 1);
+            } else {
+                int idx = getByteIdxInHexRegion(atX) + 1;
+                E.metadata.text[atY][nthBytePosInHexRegion(idx)]   = '0';
+                E.metadata.text[atY][nthBytePosInHexRegion(idx)+1] = '0';
+                E.metadata.text[atY][nthBytePosInASCIIRegion(idx)] = '.';
+            }
             return;
         }
+
+        forwardOneByte(&atX, &atY);
     }
 
-    int len;
-    char *buf = editorRowToString(&len);
+    insertByte(atX, atY);
 
-    int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
-    if (fd != -1) {
-        if (ftruncate(fd, len) != -1) {
-            if (write(fd, buf, len) == len) {
-                close(fd);
-                free(buf);
-                E.dirty = 0;
-                editorSetStatusMessage("%d bytes written to disk", len);
-                return;
-            }
-        }
-        close(fd);
-    }
-
-    free(buf);
-    editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
+    if (prepend)
+        forwardCurOneByte();
 }
 
-/*** find ***/
 
-void editorFindCallback(char *query, int key) {
-    static int last_match = -1;
-    static int direction = 1;
+void editorDelChar(editorKey key) {
+    if (key != DEL_KEY && key != BACKSPACE)
+        die("editorDelChar: invalid key");
 
-    if (key == '\r' || key == '\x1b') {
-        last_match = -1;
-        direction = 1;
-        return;
-    } else if (key == ARROW_RIGHT || key == ARROW_DOWN) {
-        direction = 1;
-    } else if (key == ARROW_LEFT || key == ARROW_UP) {
-        direction = -1;
-    } else {
-        last_match = -1;
-        direction = 1;
-    }
-
-    if (last_match == -1) direction = 1;
-    int current = last_match;
-    int i;
-    for (i = 0; i < E.numrows; i++) {
-        current += direction;
-        if (current == -1) current = E.numrows -1;
-        else if (current == E.numrows) current = 0;
-
-        erow *row = &E.row[current];
-        char *match = strstr(row->chars, query);
-        if (match) {
-            last_match = current;
-            E.cy = current;
-            //E.cx = row.size; TBD
-            E.rowoff = E.numrows;
-            break;
-        }
-    }
-}
-
-void editorFind() {
-    int saved_cx = E.cx;
-    int saved_cy = E.cy;
-    int saved_coloff = E.coloff;
-    int saved_rowoff = E.rowoff;
-
-    char *query = editorPrompt("Search: %s (Use ESC/Arrows/Enter)", NULL);
-
-    if (query) { 
-        free(query);
-    } else {
-        E.cx = saved_cx;
-        E.cy = saved_cy;
-        E.coloff = saved_coloff;
-        E.rowoff = saved_rowoff;
-    }
-}
-
-/*** append buffer ***/
-
-struct abuf {
-    char *b;
-    int len;
-};
-
-#define ABUF_INIT {NULL, 0}
-
-void abAppend(struct abuf *ab, const char *s, int len) {
-    char *new = realloc(ab->b, ab->len + len);
-
-    if (new == NULL) return;
-    memcpy(&new[ab->len], s, len);
-    ab->b = new;
-    ab->len += len;
-}
-
-void abFree(struct abuf *ab) {
-    free(ab->b);
-}
-
-/*** output ***/
-
-void editorScroll() {
-    if (E.cy < E.rowoff) {
-        E.rowoff = E.cy;
-    }
-    if (E.cy >= E.rowoff + E.screenrows) {
-        E.rowoff = E.cy - E.screenrows + 1;
-    }
-    if (E.cx < E.coloff) {
-        E.coloff = E.cx;
-    }
-    if (E.cx >= E.coloff + E.screencols) {
-        E.coloff = E.cx - E.screencols + 1;
-    }
-}
-
-void editorDrawRows(struct abuf *ab) {
-    int y;
-    for (y = 0; y < E.screenrows; y++) {
-        int filerow = y + E.rowoff;
-        if (filerow >= E.numrows) {
-            if (E.numrows == 0 && y == E.screenrows / 3) {
-                char welcome[80];
-                int welcomelen = snprintf(welcome, sizeof(welcome), "Kilo editor -- version %s", KILO_VERSION);
-                if (welcomelen > E.screencols) welcomelen = E.screencols;
-                int padding = (E.screencols - welcomelen) / 2;
-                if (padding) {
-                    abAppend(ab, "~", 1);
-                    padding--;
-                }
-                while (padding--) abAppend(ab, " ", 1);
-                abAppend(ab, welcome, welcomelen);
-            } else {
-                abAppend(ab, "~", 1);
-            }
-        } else {
-            int len = E.row[filerow].size - E.coloff;
-            if (len < 0) len = 0;
-            if (len > E.screencols) len = E.screencols;
-            abAppend(ab, &E.row[filerow].chars[E.coloff], len);
-        }
-
-        abAppend(ab, "\x1b[K", 3);
-        abAppend(ab, "\r\n", 2);
-    }
-}
-
-void editorDrawStatusBar(struct abuf *ab) {
-    abAppend(ab, "\x1b[7m", 4);
-    char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s", E.filename ? E.filename : "[No Name]", E.numrows, E.dirty ? "(modified)" : "");
-    int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cy + 1, E.numrows);
-    if (len > E.screencols) len = E.screencols;
-    abAppend(ab, status, len);
-    while (len < E.screencols) {
-        if (E.screencols - len == rlen) {
-            abAppend(ab, rstatus, rlen);
-            break;
-        } else {
-            abAppend(ab, " ", 1);
-            len++;
-        }
-    }
-    abAppend(ab, "\x1b[m", 3);
-    abAppend(ab, "\r\n", 2);
-}
-
-void editorDrawMessageBar(struct abuf *ab) {
-    abAppend(ab, "\x1b[K", 3);
-    int msglen = strlen(E.statusmsg);
-    if (msglen > E.screencols) msglen = E.screencols;
-    if (msglen && time(NULL) - E.statusmsg_time < 5)
-        abAppend(ab, E.statusmsg, msglen);
-}
-
-void editorRefreshScreen() {
-    editorScroll();
-
-    struct abuf ab = ABUF_INIT;
-
-    abAppend(&ab, "\x1b[2J", 4);
-    abAppend(&ab, "\x1b[H", 3);
-
-    editorDrawRows(&ab);
-    editorDrawStatusBar(&ab);
-    editorDrawMessageBar(&ab);
     
-    char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.cx - E.coloff) + 1);
-    abAppend(&ab, buf, strlen(buf));
+    //  00000000: 1234 1234 1234 ...
+    //  BACKSPACE: remove previous byte if x in odd position
+    //  DEL_KEY:   remove next byte if x in even position
 
-    abAppend(&ab, "\x1b[?25h", 6);
+    if (
+        (key == BACKSPACE && !isFirstHex(E.metadata.x)) ||
+        (key == DEL_KEY && isFirstHex(E.metadata.x)) 
+    ) {
+        return;
+    }
 
-    write(STDOUT_FILENO, ab.b, ab.len);
-    abFree(&ab);
+    if (
+        (key == BACKSPACE && !hasPrev(E.metadata.x, E.metadata.y)) ||
+        (key == DEL_KEY && !hasNext(E.metadata.x, E.metadata.y))
+    ) {
+        return;
+    }
+
+    unsigned int atX = E.metadata.x;
+    unsigned int atY = E.metadata.y;
+
+    // align to first hex
+    if (key == DEL_KEY)
+        forwardOne(&atX, &atY);
+
+    key == BACKSPACE ? backwardOneByte(&atX, &atY) : forwardOneByte(&atX, &atY);
+    deleteByte(atX, atY);
+
+    if (key == BACKSPACE)
+        backwardCurOneByte();
+
+    setDirty();
 }
 
-void editorSetStatusMessage(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
-    va_end(ap);
-    E.statusmsg_time = time(NULL);
+void openEditor(const char *filename) {
+    free(E.conf.filename);
+    E.conf.filename = strdup(filename);
+
+    int fp = open(filename, O_RDONLY);
+    if (fp < 0)
+        die("Invalid file: maybe not exist or file is empty");
+
+    char buf[BYTES_PER_ROW + 1] = "";
+    int len;
+    while (true) {
+        len = read(fp, &buf, BYTES_PER_ROW);
+        if (len <= 0)
+            break;
+
+        buf[len] = '\0';
+        createRow(buf, len);
+    }
+
+    close(fp);
 }
 
-/*** input ***/
+static void editorSave() {
+    if (!E.metadata.isDirty)
+        return;
 
-char *editorPrompt(char *promp, void (*callback)(char *, int)) {
-    size_t bufsize = 128;
-    char *buf = malloc(bufsize);
+    unsigned int len = 0;
+    if (E.metadata.numRows > 0)
+        len = BYTES_PER_ROW * (E.metadata.numRows - 1) + getLastRowBytesNum();
 
-    size_t buflen = 0;
-    buf[0] = '\0';
+    char *buf = calloc(1, len + 1);
+    if (buf == NULL)
+        die("calloc");
 
-    while (1) {
-        editorSetStatusMessage(promp, buf);
-        editorRefreshScreen();
+    for (unsigned int i = 0; i < E.metadata.numRows; ++i)
+        for (unsigned int j = 0; j < BYTES_PER_ROW; ++j) { 
+            unsigned int idx = i*BYTES_PER_ROW + j;
+            if (idx >= len)
+                break;
 
-        int c = editorReadKey();
-        if (c == DEL_KEY || c == CTRL_KEY('h') || c == BACKSPACE) {
-            if (buflen != 0) buf[--buflen] = '\0';
-        } if (c == '\x1b') {
-            editorSetStatusMessage("");
-            if (callback) callback(buf, c);
-            free(buf);
-            return NULL;
-        } else if (c == '\r') {
-            if (buflen != 0) {
-                editorSetStatusMessage("");
-                if (callback) callback(buf, c);
-                return buf;
-            }
-        } else if (!iscntrl(c) && c < 128) {
-            if (buflen == bufsize - 1) {
-                bufsize *= 2;
-                buf = realloc(buf, bufsize);
-            }
-            buf[buflen++] = c;
-            buf[buflen] = '\0';
+            buf[idx] = getNthRowByte(E.metadata.text[i], j);
         }
 
-        if (callback) callback(buf, c);
-   }
+    int fd = open(E.conf.filename, O_RDWR | O_CREAT, 0644);
+    if (fd == -1)
+        goto openFail;
+    
+    if (write(fd, buf, len) != len)
+        goto writeFail;
+    
+
+    close(fd);
+    free(buf);
+
+    editorSetStatusMessage("%d bytes written to disk", len);
+    setClean();
+    return;
+
+openFail:
+    editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
+
+writeFail:
+    close(fd);
+    free(buf);
 }
 
-static bool isFinal(erow *row, int at) {
-    if ((at == HEX_END_POS || at == ASCII_END_POS) ||
-        (at < HEX_END_POS && row->chars[at+1] == ' ' && row->chars[at+2] == ' ') ||
-        (at >= ASCII_START_POS && row->chars[at+1] == '\0'))
-            return true; 
+static void append(char **p, const char *s, unsigned int len) {
+    if (len == POSTIVE_INFINITY)
+        len = strlen(s);
 
-    return false;    
+    if (strlen(s) > len)
+        die("append: invalid");
+
+    char *buf = *p;
+    int bufLen = buf ? strlen(buf) : 0;
+    buf = realloc(buf, bufLen + len + 1);
+    if (buf == NULL)
+        die("realloc");
+
+    memcpy(&buf[bufLen], s, len);
+    buf[bufLen+len] = '\0';
+    *p = buf;
 }
 
-void editorMoveCursor(int key) {
+static void editorScroll() {
+    // up
+    if (E.metadata.y < E.metadata.pageFirstRowIdx)
+        E.metadata.pageFirstRowIdx = E.metadata.y;
 
+    // down
+    if (E.metadata.y >= E.metadata.pageFirstRowIdx + E.conf.screenRow)
+        E.metadata.pageFirstRowIdx = E.metadata.y - E.conf.screenRow + 1;
+    
+    // left
+    if (E.metadata.x < E.metadata.pageFirstColIdx)
+        E.metadata.pageFirstColIdx = E.metadata.x;
+
+    // right
+    if (E.metadata.x >= E.metadata.pageFirstColIdx + E.conf.screenCol)
+        E.metadata.pageFirstColIdx = E.metadata.x - E.conf.screenCol + 1;
+}
+
+static void editorDrawRows(char **buf) {
+    for (unsigned int i = 0; i < E.conf.screenRow; ++i) {
+        unsigned int r = E.metadata.pageFirstRowIdx  + i;
+        if (r >= E.metadata.numRows) {
+            append(buf, "~", POSTIVE_INFINITY);
+        } else if (E.metadata.numRows == 0 && r == E.conf.screenRow / 3) {
+            char welcome[80];
+            unsigned int len = snprintf(welcome, sizeof(welcome), "editor -- version %s", VERSION);
+            if (len > E.conf.screenCol)
+                len = E.conf.screenCol;
+                
+        int padding = (E.conf.screenCol - len) / 2;
+            if (padding) {
+                append(buf, "~", POSTIVE_INFINITY);
+                padding--;
+            }
+
+            while (padding--)
+                append(buf, " ", POSTIVE_INFINITY);
+
+            append(buf, welcome, POSTIVE_INFINITY);
+        } else {
+            unsigned int len = strlen(E.metadata.text[r]) - E.metadata.pageFirstColIdx;
+            if (len > E.conf.screenCol)
+                len = E.conf.screenCol;
+
+            if (len > 0) {
+                append(buf, &E.metadata.text[r][E.metadata.pageFirstColIdx], len);
+            }
+        }
+
+        append(buf, "\x1b[K", POSTIVE_INFINITY);
+        append(buf, "\r\n", POSTIVE_INFINITY);
+    }
+}
+
+static void editorDrawMessageBar(char **buf) {
+    append(buf, "\x1b[K", POSTIVE_INFINITY);
+    unsigned int len = E.metadata.statusMsg? strlen(E.metadata.statusMsg) : 0;
+    if (len > E.conf.screenCol)
+        len = E.conf.screenCol;
+
+    if (len && time(NULL) - E.metadata.statusTime < 5)
+        append(buf, E.metadata.statusMsg, len);
+}
+
+static void editorRefreshScreen() {
+    editorScroll();
+    char *buf = NULL;
+    append(&buf, "\x1b[2J", POSTIVE_INFINITY);
+    append(&buf, "\x1b[H", POSTIVE_INFINITY);
+
+    editorDrawRows(&buf);
+    editorDrawMessageBar(&buf);
+    
+    char lineInfo[32];
+    snprintf(lineInfo, sizeof(lineInfo), "\x1b[%d;%dH", E.metadata.y - E.metadata.pageFirstRowIdx + 1, E.metadata.x - E.metadata.pageFirstColIdx + 1);
+    append(&buf, lineInfo, POSTIVE_INFINITY);
+    append(&buf, "\x1b[?25h", POSTIVE_INFINITY);
+
+    write(STDOUT_FILENO, buf, strlen(buf));
+    free(buf);
+}
+
+static void editorSetStatusMessage(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    if (E.metadata.statusMsg) {
+        free(E.metadata.statusMsg);
+        E.metadata.statusMsg = NULL;
+    }
+
+    char *msg = calloc(1, ROW_LEN);
+    if (msg == NULL)
+        die("calloc");
+
+    vsnprintf(msg, ROW_LEN, fmt, args);
+    va_end(args);
+
+    E.metadata.statusMsg = msg;
+    E.metadata.statusTime = time(NULL);
+}
+
+static void editorMoveCursor(int key) {
     switch (key) {
         case ARROW_LEFT:
-            if (E.cx == ASCII_START_POS) {
-                E.cx = HEX_END_POS;
-                while (E.row[E.cy].chars[E.cx] == ' ')
-                    E.cx--;
-            }
-            else if (E.cx == HEX_START_POS+1) {
-                if (E.cy == 0) return;
-                E.cy--;
-                E.cx = ASCII_END_POS;
-            }
-            else {
-                E.cx--;
-                while (E.cx < HEX_END_POS && E.cx > HEX_START_POS && E.row[E.cy].chars[E.cx] == ' ' && E.row[E.cy].chars[E.cx-1] != ' ')
-                    E.cx--;
-            }
+            backwardCurOne();
             break;
 
         case ARROW_RIGHT:
-            if (E.cx == ASCII_END_POS) {
-                if (E.cy + 1 == E.numrows) return;
-                E.cy++;
-                E.cx = HEX_START_POS + 1;
-            }
-            else if (E.cx == HEX_END_POS || isLastByte(E.cx, E.cy)) {
-                E.cx = ASCII_START_POS;
-            }
-            else {
-                if (isFinal(&E.row[E.cy], E.cx)) return;
-                E.cx++;
-                while (E.cx < HEX_END_POS && E.row[E.cy].chars[E.cx] == ' ' && E.row[E.cy].chars[E.cx+1] != ' ')
-                    E.cx++;
-            }
+            forwardCurOne();
             break;
 
         case ARROW_UP:
-            if (E.cy != 0) {
-                E.cy--;
+            if (E.metadata.y != 0) {
+                E.metadata.y--;
             }
             break;
 
         case ARROW_DOWN:
-            if (E.cy != E.numrows-1) {
-                E.cy++;
-                while (E.cx <= HEX_END_POS && E.cx > HEX_START_POS && E.row[E.cy].chars[E.cx] == ' ')
-                    E.cx--;
-                while (E.cx <= ASCII_END_POS && E.cx > ASCII_START_POS && E.row[E.cy].chars[E.cx] == '\0')
-                    E.cx--;
-            }
-            break;
-
-        case ARROW_RIGHT_BOUND:
-            if (E.cx == HEX_END_POS) {
-                if (E.cy + 1 == E.numrows) return;
-                E.cy++;
-                E.cx = HEX_START_POS + 1;
-            }
-            else if (E.cx == ASCII_END_POS) {
-                if (E.cy + 1 == E.numrows) return;
-                E.cy++;
-                E.cx = ASCII_START_POS;
-            }
-            else {
-                if (isFinal(&E.row[E.cy], E.cx)) return;
-                E.cx++;
-                while (E.cx < HEX_END_POS && E.row[E.cy].chars[E.cx] == ' ' && E.row[E.cy].chars[E.cx+1] != ' ')
-                    E.cx++;
-                 
-            }
-            break;
-        
-        case ARROW_LEFT_BOUND:
-            if (E.cx == HEX_START_POS+1) {
-                if (E.cy == 0) return;
-                E.cy--;
-                E.cx = HEX_END_POS;
-            }
-            else if (E.cx == ASCII_START_POS) {
-                if (E.cy == 0) return;
-                E.cy--;
-                E.cx = ASCII_END_POS;
-            }
-            else {
-                E.cx--;
-                while (E.cx < HEX_END_POS && E.cx > HEX_START_POS && E.row[E.cy].chars[E.cx] == ' ' && E.row[E.cy].chars[E.cx-1] != ' ')
-                    E.cx--;
+            if (E.metadata.y != E.metadata.numRows - 1) {
+                ++E.metadata.y;
+                while (E.metadata.x <= HEX_END_POS && E.metadata.x > HEX_START_POS && E.metadata.text[E.metadata.y][E.metadata.x] == ' ')
+                    E.metadata.x--;
+                while (E.metadata.x <= ASCII_END_POS && E.metadata.x > ASCII_START_POS && E.metadata.text[E.metadata.y][E.metadata.x] == '\0')
+                    E.metadata.x--;
             }
             break;
     }
 
 }
 
-void editorProcessKeypress() {
-    static int quit_times = KILO_QUIT_TIMES;
-
+static void editorProcessKeypress() {
+    static int quit_times = QUIT_TIMES;
     int c = editorReadKey();
+
+    if (c != CTRL_KEY('q'))
+        editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-I = Insert NULL");
 
     switch (c) {
         case '\r':
@@ -930,15 +954,15 @@ void editorProcessKeypress() {
             break;
 
         case CTRL_KEY('q'):
-            if (E.dirty && quit_times > 0) {
+            if (E.metadata.isDirty && quit_times > 0) {
                 editorSetStatusMessage("WARNING!!! File has unsaved changes. Press Ctrl-Q %d more times to quit.", quit_times);
-                quit_times--;
+                --quit_times;
                 return;
             }
 
             write(STDOUT_FILENO, "\x1b[2J", 4);
             write(STDOUT_FILENO, "\x1b[H", 3);
-            exit(0);
+            terminate(0);
             break;
 
         case CTRL_KEY('s'):
@@ -946,33 +970,31 @@ void editorProcessKeypress() {
             break;
 
         case HOME_KEY:
-            E.cx = HEX_START_POS+1;
+            E.metadata.x = HEX_START_POS+1;
             break;
 
         case END_KEY:
-            if (E.cy < E.numrows)
-                E.cx = E.row[E.cy].size-1;
+            if (E.metadata.y < E.metadata.numRows)
+                E.metadata.x = strlen(E.metadata.text[E.metadata.y]) - 1;
             break;
 
         case CTRL_KEY('f'):
-            editorFind();
+            // TODO
             break;
 
         case BACKSPACE:
-        case CTRL_KEY('h'):
         case DEL_KEY:
-            if (c == DEL_KEY) editorMoveCursor(ARROW_RIGHT);
-            editorDelChar();
+            editorDelChar(c);
             break;
 
         case PAGE_UP:
         case PAGE_DOWN:
           {
-            int times = E.screenrows;
+            int times = E.conf.screenRow;
             while (times--)
                 editorMoveCursor( c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
-          }
             break;
+          }
         case ARROW_UP:
         case ARROW_DOWN:
         case ARROW_LEFT:
@@ -989,38 +1011,44 @@ void editorProcessKeypress() {
             break;
     }
 
-    quit_times = KILO_QUIT_TIMES;
+    quit_times = QUIT_TIMES;
 }
 
-/*** init ***/
+static void initEditor() {
+    E.metadata.x = ADDR_LEN+2;
+    E.metadata.y = 0;
+    E.metadata.numRows = 0;
+    E.metadata.pageFirstRowIdx = 0;
+    E.metadata.pageFirstColIdx = 0;
 
-void initEditor() {
-    E.cx = ADDR_LEN+2;
-    E.cy = 0;
-    E.rowoff = 0;
-    E.coloff = 0;
-    E.numrows = 0;
-    E.row = NULL;
-    E.dirty = 0;
-    E.filename = NULL;
-    E.statusmsg[0] = '\0';
-    E.statusmsg_time = 0;
+    E.metadata.text = NULL;
+    E.metadata.statusMsg = NULL;
+    E.metadata.statusTime = 0;
+    E.metadata.isDirty = false;
 
-    if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
-    E.screenrows -= 2;
+    E.conf.filename = NULL;
+    if (getWindowSize(&E.conf.screenRow, &E.conf.screenCol) == -1)
+        die("initEditor: getWindowSize");
+    
+    if (E.conf.screenRow == 0 || E.conf.screenCol < 1)
+        die("initEditor: invalid screen size");
+
+    // space for status/help
+    E.conf.screenRow -= 1;
 }
 
-int main (int argc, char *argv[]) {
+int main(int argc, char *argv[]) {
     if (argc < 2) {
-        printf("Usage ./kilo <file>\n");
-        exit(1);
+        printf("Usage ./hxd <file>\n");
+        terminate(1);
     }
 
     enableRawMode();
     initEditor();
-    editorOpen(argv[1]);
+    openEditor(argv[1]);
+    editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-I = Insert NULL");
+
     while (1) {
-        editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-I = Insert NULL");
         editorRefreshScreen();
         editorProcessKeypress();
     }

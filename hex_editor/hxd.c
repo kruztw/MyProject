@@ -34,6 +34,7 @@
 typedef enum {
     // FIXME: other platform ?
     BACKSPACE = 8,
+    BACKSPACE2 = 127,
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
@@ -149,7 +150,7 @@ void Log(const char *fmt, ...) {
     }
 
     va_list args;
-    va_start(args,     fmt);
+    va_start(args, fmt);
     vfprintf(logFptr, fmt, args);
     va_end(args);
 }
@@ -713,7 +714,7 @@ void editorDelChar(editorKey key) {
 
     // align to first hex
     if (key == DEL_KEY)
-        forwardOne(&atX, &atY);
+        backwardOne(&atX, &atY);
 
     key == BACKSPACE ? backwardOneByte(&atX, &atY) : forwardOneByte(&atX, &atY);
     deleteByte(atX, atY);
@@ -938,13 +939,23 @@ static void editorMoveCursor(int key) {
 
 }
 
+static int keyTransform(int key) {
+    if (key == BACKSPACE2)
+        return BACKSPACE;
+
+    return key;
+}
+
 static void editorProcessKeypress() {
     static int quit_times = QUIT_TIMES;
     int c = editorReadKey();
 
+    c = keyTransform(c);
+
     if (c != CTRL_KEY('q'))
         editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-I = Insert NULL");
 
+    Log("c = %d\n", c);
     switch (c) {
         case '\r':
             break;

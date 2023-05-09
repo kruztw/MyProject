@@ -645,6 +645,7 @@ void editorEditChar(int c) {
     
     editorRowEditChar(E.metadata.x, E.metadata.y, c);
     forwardCurOne();
+    setDirty();
 }
 
 void editorInsertChar() {
@@ -955,7 +956,6 @@ static void editorProcessKeypress() {
     if (c != CTRL_KEY('q'))
         editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-I = Insert NULL");
 
-    Log("c = %d\n", c);
     switch (c) {
         case '\r':
             break;
